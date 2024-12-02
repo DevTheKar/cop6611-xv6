@@ -5,9 +5,9 @@ This README details the modifications made to xv6 in two parts:
 
 1. **Part A: Pointer Dereference**  
    Modification of xv6's virtual memory layout to leave the first three pages unmapped and handle null pointer dereferences effectively.
-   
+
 2. **Part C: CPU Scheduling**  
-   Implementation of additional scheduling algorithms—First-Come, First-Serve (FCFS) and Priority-Based Scheduling (PBS)—and enhancements for process management and statistics reporting.
+   Implementation of First-Come, First-Serve (FCFS) and Priority-Based Scheduling (PBS) algorithms, with reporting of average wait and turnaround times for processes.
 
 ---
 
@@ -21,103 +21,124 @@ Where `FLAG` can be one of the following:
 - `RR` (default): Round Robin
 - `FCFS`: First-Come, First-Serve
 - `PBS`: Priority-Based Scheduling
-- `MLFQ`: Multi-Level Feedback Queue
-
----
-
-## **Test Files**
-| **File**           | **Command**           | **Description**                                   |
-|---------------------|-----------------------|---------------------------------------------------|
-| `setPriority.c`     | `setPriority <priority> <pid>` | Change the priority of a process.                |
-| `time.c`            | `time <process>`     | Measure the runtime and wait time of a process.  |
-| `tester.c`          | `time tester`        | Run a benchmarking program for scheduling.       |
-| `tester_ps.c`       | `tester_ps`          | Test process statistics (includes `getps`).      |
-| `tester_pbs.c`      | `tester_pbs`         | Test Priority-Based Scheduling (PBS).            |
-| `tester_mlfq.c`     | `tester_mlfq`        | Test Multi-Level Feedback Queue (MLFQ).          |
 
 ---
 
 ## **Part A: Pointer Dereference**
+
 ### **Objective**
-To modify xv6's virtual memory layout such that the first three pages (0x0 to 0x2FFF) remain unmapped. This ensures that null pointer dereferences result in a trap and termination of the offending process.
+Modify xv6's virtual memory layout to leave the first three pages (0x0 to 0x2FFF) unmapped, ensuring null pointer dereferences result in process termination.
 
-### **Changes Made**
+### **Key Changes**
 1. **Unmapped Pages:**
-   - Updated the virtual memory layout to ensure user code starts at 0x3000, leaving the first three pages unmapped.
-   - Modified `exec.c`, `syscall.c`, and `vm.c` to align with this new memory layout.
-   
+   - User code now starts at 0x3000.
+   - Updated `exec.c`:
+     ```c
+     sz = PGSIZE;
+     ```
+   - Modified `vm.c` to skip the first three pages when copying memory:
+     ```c
+     for (i = PGSIZE; i < sz; i += PGSIZE) {
+     ```
+   - Adjusted `Makefile` to align entry points with the new memory layout:
+     ```make
+     ld -N -e 0x3000 -Ttext 0x3000 -o initcode.out initcode.o
+     ```
+
 2. **Trap Handling:**
-   - Added logic in `trap.c` to detect and terminate processes attempting to access the unmapped range.
+   - Added logic in `trap.c` to terminate processes accessing the unmapped range:
+     ```c
+     case T_PGFLT: {
+         uint fault_addr = rcr2();
+         if (fault_addr < 0x3000) {
+             cprintf("pid %d %s: null pointer or unmapped access at 0x%x\n",
+                     myproc()->pid, myproc()->name, fault_addr);
+             myproc()->killed = 1;
+         }
+         break;
+     }
+     ```
 
-3. **Makefile:**
-   - Adjusted user program entry points to start at 0x3000.
+3. **System Call Updates:**
+   - Updated `syscall.c` to validate syscall arguments against the new memory layout:
+     ```c
+     if (size < 0 || (uint)i >= curproc->sz || (uint)i + size > curproc->sz || i == 0)
+         return -1;
+     ```
 
-### **Testing**
-**Null Pointer Dereference Test**
-- A test program dereferences a null pointer to verify that the process is terminated as expected.
-- Run using:
-  ```bash
-  nulltest
-  ```
+---
+
+![alt text](image.png)
 
 ---
 
 ## **Part C: CPU Scheduling**
 
 ### **Objective**
-To implement and test additional CPU scheduling algorithms, including:
-1. **First-Come, First-Serve (FCFS):** Non-preemptive scheduling based on process arrival time.
-2. **Priority-Based Scheduling (PBS):** Scheduling processes based on priority values, with lower numbers indicating higher priority.
+Implement two scheduling algorithms—FCFS and PBS—and report average wait and turnaround times for all processes.
 
-### **Modifications**
+### **Key Changes**
 
-#### **1. FCFS Scheduler**
-- Implemented in `scheduler.c`.
-- Processes are selected based on the minimum `p->ctime` (creation time).
-- Preemption is disabled for FCFS:
+#### **1. First-Come, First-Serve (FCFS)**
+- Processes are scheduled based on their creation time (`p->ctime`).
+- Non-preemptive: The first process to arrive runs until completion.
+- Scheduler implementation in `scheduler.c`:
   ```c
-  #ifndef FCFS
-      yield();
-  #endif
-  ```
-- Ensures non-preemptive behavior.
+  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      if (p->state != RUNNABLE)
+          continue;
 
-#### **2. PBS Scheduler**
-- Processes are scheduled based on priority. In case of ties, processes are selected based on `p->ctime`.
-- Added `setPriority` system call:
-  ```c
-  int sys_set_priority(void) {
-      int pid, priority;
-      if (argint(0, &pid) < 0 || argint(1, &priority) < 0) return -1;
-      return set_priority(pid, priority);
+      if (to_run_proc == 0)
+          to_run_proc = p;
+      else if (p->ctime < to_run_proc->ctime)
+          to_run_proc = p;
   }
   ```
 
-#### **3. Process Statistics**
-- Enhanced `struct proc` in `proc.h` to include fields for:
+#### **2. Priority-Based Scheduling (PBS)**
+- Processes are scheduled based on priority (`p->priority`). In case of ties, processes with earlier `p->ctime` are selected.
+- Added `setPriority` system call:
+  ```c
+  int set_priority(int pid, int priority) {
+      struct proc *p;
+      int old_priority = 0;
+      for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+          if (p->pid == pid) {
+              old_priority = p->priority;
+              p->priority = priority;
+              break;
+          }
+      }
+      return old_priority;
+  }
+  ```
+
+#### **Process Statistics**
+- Enhanced `struct proc` in `proc.h` to include:
   - `ctime`: Creation time.
   - `etime`: Exit time.
   - `rtime`: Runtime.
   - `iotime`: I/O wait time.
-- Added `getps` system call for detailed process statistics.
 
-#### **4. Testing Enhancements**
-- Benchmarked scheduling algorithms with `time tester` and analyzed runtime, wait time, and sleep time.
+---
 
-### **Testing Results**
+### **Comparison Table**
 
-#### **Comparison Table**
-| Scheduler | Wait Time | Runtime | Sleep Time | Total Time |
-|-----------|-----------|---------|------------|------------|
-| **RR**    | 3         | 17      | 2435       | 2455       |
-| **FCFS**  | 5         | 1       | 4220       | 4226       |
-| **PBS**   | 6         | 15      | 2422       | 2444       |
-| **MLFQ**  | 5         | 1       | 2404       | 2410       |
+| Scheduler | Average Wait Time | Average Turnaround Time |
+|-----------|--------------------|-------------------------|
+| **FCFS**  | 5                  | 25                      |
+| **PBS**   | 4                  | 22                      |
 
-- **Order of Efficiency:**  
-  MLFQ < PBS ≈ RR < FCFS  
-  - FCFS has the longest total time due to non-preemption.
-  - MLFQ demonstrates the shortest total time by dynamically adjusting priorities and preventing starvation.
+#### FCFS Testing
+![alt text](FCFSt.png)
+
+
+#### PBS Testing
+![alt text](PBSt.png)
+
+- **Key Observations:**
+  - **FCFS** has higher turnaround times due to non-preemption.
+  - **PBS** provides better response times by prioritizing processes.
 
 ---
 
@@ -126,12 +147,9 @@ To implement and test additional CPU scheduling algorithms, including:
    - `proc.c`, `proc.h`, `trap.c`, `scheduler.c`, `syscall.c`, `sysproc.c`, `defs.h`, `usys.S`, `user.h`
    
 2. **Test Files Added:**
-   - `time.c`, `tester.c`, `tester_ps.c`, `tester_pbs.c`, `tester_mlfq.c`, `setPriority.c`
+   - `test.c`: Simulates different scheduling scenarios and reports statistics.
 
 3. **Makefile Updates:**
    - Added support for configurable schedulers via the `SCHEDULER` flag.
-
-4. **Documentation:**
-   - README updated with detailed instructions and results.
 
 ---
